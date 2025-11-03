@@ -12,7 +12,7 @@ entity top is
     port (  
         clock                   :   in      std_logic;
         user_reset              :   in      std_logic;  
-        control                 :   in      std_logic_vector(3 downto 0); 
+        IP_select               :   in      std_logic_vector(3 downto 0); 
         usb_rs232_rxd           :   in      std_logic;
         usb_rs232_txd           :   out     std_logic;
         led2_r                  :   out     std_logic;
@@ -152,7 +152,7 @@ architecture rtl of top is
   signal fifo_empty_r_ethernet                             : std_logic;
   signal fifo_data_out_stb_r_ethernet                      : std_logic;
   signal fifo_data_out_r_ethernet                          : std_logic_vector(7 downto 0);
-  
+  signal IP_addr                                           : std_logic_vector(31 downto 0);
   
   signal flag                                              : std_logic;
   signal bytecnt                                           : unsigned(3 downto 0) := "0000";
@@ -257,7 +257,8 @@ end component;
         
         -- SPI Flash Mem
         qspi_cs                 : out std_logic;        
-        qspi_dq                 : inout std_logic_vector(3 downto 0)   -- dg(0) is MOSI, dq(1) MISO
+        qspi_dq                 : inout std_logic_vector(3 downto 0);   -- dg(0) is MOSI, dq(1) MISO
+         IP                      : in std_logic_vector (31 downto 0)
          );   
     end component ethernet;
     
@@ -265,8 +266,7 @@ end component;
     component HVDB is
       Port  ( 
       HVDB_control_in : in std_logic;   -- handshake signals
-      HVDB_control_out : out std_logic; -- handshake signals 
-      
+      HVDB_control_out : out std_logic; -- handshake signals     
       HVDB_state_data : out std_logic_vector (31 downto 0); --  data
             
       command : in std_logic_vector (31 downto 0);
@@ -313,7 +313,8 @@ begin
         eth_txd                 => eth_txd,   -- Transmit Data
         -- SPI Flash Mem
         qspi_cs                 => qspi_cs,        
-        qspi_dq                 => qspi_dq   -- dg(0) is MOSI, dq(1) MISO
+        qspi_dq                 => qspi_dq,   -- dg(0) is MOSI, dq(1) MISO
+         IP                     => IP_addr
          );   
 
     ----------------------------------------------------------------------------
@@ -444,6 +445,7 @@ begin
     startConv2 <= startConv;
 
 ---------------------------ADC process------------------------------------------------  
+    
     adc_process:  process(clock)
     begin
         if rising_edge(clock) then
@@ -461,13 +463,23 @@ begin
                 timeron            <= '0';
                 MUX_selection      <=  "0000";
                 HVDB_cmd_on        <= "00";
-
+                              
             else
                 -- Default deassert
                 fifo_data_out_stb  <= '0';
                 if resetTimer = '1' then
                     resetTimer <= '0';
                 end if;
+                
+              if IP_select = "1000" then
+                IP_addr <=  x"78A801C8"; -- my pc 120.168.1.200
+              elsif IP_select = "0100" then
+                IP_addr <=  x"C0A800C8"; -- main pc 192.168.0.200
+              elsif IP_select = "0010" then
+                IP_addr <=  x"0ACBAF64"; -- old pc Cghosh 10.203.175.100 
+              elsif IP_select = "0001" then
+                IP_addr <=  x"0A640117"; -- 10.100.1.23
+              end if;
                     
     ----------------Free running Timeout Block ---------------------------            
                 if timeron = '1' then 
@@ -509,7 +521,7 @@ begin
                         end if;
                     
                      when START_READ => 
-                     if  HVDB_control_out_s = '0' then    
+                     if  HVDB_control_out_s = '0'  then    
                             if MUX_selection < 1 then
                                 if data_ready1 = '1' and readData = '0' and newData = '1'then
         --                            ADC_data <= adc_out_data;                         
@@ -548,7 +560,8 @@ begin
                             DataType <= "11111000";
                             DeviceID <= VMON(31 downto 8);
                             TransmitData <= x"00" & VMON(7 downto 0);  
-                            HVDB_control_in_s <= '0';                                                       
+                            HVDB_control_in_s <= '0';   
+                                           
                         elsif readData = '1' then                          
                             readData <= '0';
 
@@ -699,7 +712,6 @@ begin
 ---------------------------Reading the Command--------------------------------------------------
                 if fifo_empty = '0' and sendLogic = '0' then
                     fifo_data_out_stb <= '1';
-                
                     -- Simple command (like 0x31 or 0x32)
                     if (fifo_data_out = x"31" or fifo_data_out = x"32") and HVDB_cmd_on = "00" then
                         command_execute <= '1';
@@ -726,8 +738,6 @@ begin
                         HVDB_control_in_s <= '1';                     -- trigger processing
                         HVDB_cmd_on <= "00";                           -- reset FSM
                         sendLogic <= sendLogic xor '1';               -- signal complete
-                    
-                
                     else
                         command_execute <= '0';
                         sendLogic <= sendLogic xor '1';
@@ -735,22 +745,46 @@ begin
                             resetTimer <= '1';
                         end if;
                     end if;
-                                        
-                 elsif fifo_empty_r_ethernet = '0' and sendLogic = '0'  then
-                    fifo_data_out_stb_r_ethernet       <= '1';
-                    if fifo_data_out_r_ethernet = x"31" or fifo_data_out_r_ethernet = x"32" then
-                        command_execute <= '1';
-                        command <= fifo_data_out_r_ethernet;
-                    else    
-                        command_execute <= '0';
+                    ----------------------- ethernet command ----------------------
+                   elsif fifo_empty_r_ethernet = '0' then
+                        fifo_data_out_stb_r_ethernet <= '1';
+                    -- Simple command (like 0x31 or 0x32)
+                        if (fifo_data_out_r_ethernet = x"31" or fifo_data_out_r_ethernet = x"32") and HVDB_cmd_on = "00" then
+                            command_execute <= '1';
+                            command <= fifo_data_out_r_ethernet;
+                            sendLogic <= sendLogic xor '1';  
+                        -- First byte of HVDB command (ignored)
+                        elsif fifo_data_out_r_ethernet = x"61" or fifo_data_out_r_ethernet = x"62" then
+                            HVDB_cmd_on <= "01";  -- move to next byte
+--                            sendLogic <= sendLogic xor '1';  
+                            command_HVDB(31 downto 24) <= fifo_data_out_r_ethernet;
+                        -- Second byte of HVDB command (first useful byte)
+                        elsif HVDB_cmd_on = "01" then
+                            command_HVDB(23 downto 16) <= fifo_data_out_r_ethernet;  -- store as high byte
+                            HVDB_cmd_on <= "10";                           -- reset FSM
+--                            sendLogic <= sendLogic xor '1';    
+                        -- Third byte of HVDB command (second useful byte)
+                        elsif HVDB_cmd_on = "10" then
+                            command_HVDB(15 downto 8) <= fifo_data_out_r_ethernet;   -- store as low byte
+--                            HVDB_control_in_s <= '1';                     -- trigger processing
+                            HVDB_cmd_on <= "11";                           -- reset FSM
+--                            sendLogic <= sendLogic xor '1';               -- signal complete   
+                        -- Third byte of HVDB command (second useful byte)
+                        elsif HVDB_cmd_on = "11" then
+                            command_HVDB(7 downto 0) <= fifo_data_out_r_ethernet;   -- store as low byte
+                            HVDB_control_in_s <= '1';                     -- trigger processing
+                            HVDB_cmd_on <= "00";                           -- reset FSM
+                            sendLogic <= sendLogic xor '1';               -- signal complete
+                        else
+                            command_execute <= '0';
+                            sendLogic <= sendLogic xor '1';
+                            if fifo_data_out_r_ethernet = x"33" then
+                                resetTimer <= '1';
+                            end if;
+                         end if;
+                   elsif sendLogic = '1' then
                         sendLogic <= sendLogic xor '1';
-                        if fifo_data_out_r_ethernet = x"33" then
-                        resetTimer <= '1';
-                        end if;
-                    end if;
-                elsif sendLogic = '1' then
-                    sendLogic <= sendLogic xor '1';
-                end if;
+                END IF;
               end if;
              end if;
     end process;
@@ -762,6 +796,7 @@ begin
   selectLines <= LineSelectSignals;
   LineSelectSignals <= std_logic_vector(MUX_selection);
   selectSignals <= LineSelectSignals;
+
    
   
 end rtl;
