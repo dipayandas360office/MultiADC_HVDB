@@ -41,6 +41,7 @@ begin
             if reset = '1' then 
                 Chnl_select <= "0000";
                 MUX_select <= "1111";
+                InputState <= '0';
                 count <= 0;
             elsif HVDB_control_in = '1' and count < 5 then 
                 count <= count+1;
@@ -68,10 +69,13 @@ begin
 --                HVDB_state_data <= command(31 downto 8) & "0000000" & VMON; 
                 HVDB_state_data <= command; 
                 HVDB_control_out <= '1';
+                MUX_select <= "1111";
             elsif HVDB_control_in = '0'  then 
                 count <= 0;  
                 MUX_select <= "1111";
                 HVDB_control_out <= '0';
+                InputState <= '0'; ------------ modified to make it a pulse
+                
 --                Chnl_select <= "0000";            
             end if;         
         end if; 
