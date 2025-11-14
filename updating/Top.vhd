@@ -35,8 +35,11 @@ entity top is
 -------------------HVDB ports --------------------------------
         ReadPin                     : in std_logic;
         WritePin                    : out std_logic;
-        HVDB_MUX_select             : out std_logic_vector (3 downto 0);
-        HVDB_chnl_select            : out std_logic_vector (3 downto 0);
+        
+        HVDB_Read_MUX_select              : out std_logic_vector (1 downto 0);
+        HVDB_chnl_select                  : out std_logic_vector (3 downto 0);
+        HVDB_Write_MUX_select             : out std_logic_vector (1 downto 0);
+
 
 ------------------MUX ports----------------------------------------------------
         selectButtons           : in std_logic_vector( 3 downto 0);
@@ -117,7 +120,7 @@ architecture rtl of top is
     signal resetTimer  , timeron                      : std_logic := '0';
     
     ---State Declaration-------------------------------------------------------------------------------------
-    type adc_state is (START_READ,START_READ1, STOP_READ, IDLE,trasnmit,START_READ_HVDB);
+    type adc_state is (ADC1_READ , ADC2_READ, IDLE,Decision_block , trasnmit,HVDB_READ);
     signal adc_read_state : adc_state := IDLE ;
     
  ------- Control SIgnals and states----------------------------------------------------------------------------
@@ -164,7 +167,7 @@ architecture rtl of top is
   
   -------------------------- HVDB signals ------------------------------------
     
-  signal HVDB_control_in_s , was_idle  : std_logic;
+  signal HVDB_control_in_s , was_idle ,HVDB_control_in_write_s , HVDB_control_out_write_s : std_logic:='0';
   signal HVDB_cmd_on : std_logic_vector (1 downto 0):="00";
   signal HVDB_control_out_s  : std_logic;
   signal VMON_out         : std_logic;
@@ -179,6 +182,9 @@ architecture rtl of top is
   signal Chnl_select       : std_logic_vector(3 downto 0);
   signal MUX_select        : std_logic_vector(3 downto 0);
     
+   -------------NEW SIGNALS ADDED -------------------
+   SIGNAL read_active , ADC1_ACTIVE , ADC2_ACTIVE:     std_logic := '0';
+   
 -----------------16MHz clk ------------------------------------------------------------------------------------
 component clk_wiz_0
 port(
@@ -267,7 +273,8 @@ end component;
       Port  ( 
       HVDB_control_in : in std_logic;   -- handshake signals
       HVDB_control_out : out std_logic; -- handshake signals 
-      
+      HVDB_control_in_write : in std_logic; -- signal when command arrives
+      HVDB_control_out_write : out std_logic; -- signal when the process is complete
       HVDB_state_data : out std_logic_vector (31 downto 0); --  data
             
       command : in std_logic_vector (31 downto 0);
@@ -278,7 +285,8 @@ end component;
       VMON : in std_logic;    
       InputState : out std_logic;
       Chnl_select : out std_logic_vector(3 downto 0);
-      MUX_select : out std_logic_vector(3 downto 0)
+      Write_MUX_select : out std_logic_vector(1 downto 0);
+      Read_MUX_select : out std_logic_vector(1 downto 0)
       );
       end component HVDB;
       
@@ -377,7 +385,8 @@ begin
         HVDB_control_in  => HVDB_control_in_s,
         HVDB_control_out => HVDB_control_out_s,
         HVDB_state_data         => VMON,
-
+        HVDB_control_in_write =>  HVDB_control_in_write_s,-- signal when command arrives
+        HVDB_control_out_write => HVDB_control_out_write_s,-- signal when the process is complete
 --        InputState_in    => InputState_in,
 --        SelectChannel_in => SelectChannel_in,
 --        SelectMUX_in     => SelectMUX_in,
@@ -390,7 +399,8 @@ begin
         VMON             => ReadPin,  -- input from board
         InputState       => WritePin, -- input to board
         Chnl_select      => HVDB_chnl_select,
-        MUX_select       => HVDB_MUX_select
+        Write_MUX_select => HVDB_Write_MUX_select,
+        Read_MUX_select  => HVDB_Read_MUX_select
     );
 
        
@@ -429,7 +439,6 @@ begin
                 ReduceSpeed <= x"0000000";
                 TimeCounter <= x"00000000";
             else  
-                --if ReduceSpeed = x"5F5E100" then  ---to convert 100MHz to 1 Hz
                 if ReduceSpeed = x"989680" then  ---to convert 100MHz to 10 Hz
                     TimeCounter <= TimeCounter + 1;
                     ReduceSpeed <= x"0000000";
@@ -462,6 +471,7 @@ begin
                 timeron            <= '0';
                 MUX_selection      <=  "0000";
                 HVDB_cmd_on        <= "00";
+                HVDB_control_in_s <= '1'; 
 
             else
                 -- Default deassert
@@ -469,20 +479,24 @@ begin
                 if resetTimer = '1' then
                     resetTimer <= '0';
                 end if;
+                if HVDB_control_out_write_s = '1' then   
+                    HVDB_control_in_write_s <='0';
+                end if;  
                 
-
-                    
-    ----------------Free running Timeout Block ---------------------------            
-                    if timerCount < x"05ff660" then  --- for making 1 Hz
-                        timerCount <= timerCount + 1;
-                    elsif timerCount = x"000fff" then
-                        startConv <= '0';
-                        newData <= '0';
-                        readData <= '0';
-                        adc_read_state <= IDLE;
-                        timerCount <= x"0000000";
-                    end if;
-                    
+    ----------------Free running Timeout Block ---------------------------    
+                        
+                if timerCount < x"0fff661" then  --- for making 1 Hz
+                    timerCount <= timerCount + 1;
+                elsif timerCount = x"0ffffff" then
+                    startConv <= '0';
+                    newData <= '0';
+                    readData <= '0';
+                    adc_read_state <= IDLE;
+                    timerCount <= x"0000000";
+                else 
+                    timerCount <= timerCount + 1;
+                end if;
+                
  ---------------------- ADC FSM------------------------------------------------
                 case adc_read_state is
                     when IDLE =>               
@@ -491,63 +505,96 @@ begin
                         readData <='0';
                         sendLogic <= '0';
                         
-                        if timerCount = x"05ff660" then
+                        if timerCount = x"0fff660" then
                             timerCount <= x"0000000";
                             startConv <= '1';
                             newData <= '1';
+                            HVDB_control_in_s <= '1'; 
+                            if command_execute = '1' then
+                                if command = x"31" then
+                                     read_active <= '1'; 
+                                elsif command = x"32" then
+                                     read_active <= '0'; 
+                                end if;
+                            end if;
+
                             adc_read_state <= Decision_block;
                         end if;
-                        
-                        if command_execute = '1' then
-                            if command = x"31" then
-                                 read_active <= '1'
-                            elsif command = x"32" then
-                                 read_active <= '0'                      
-                            end if;
-                        end if;
-                        
+
+                                               
                      when Decision_block =>
                         if ADC1_ACTIVE = '1' and read_active = '1'  then
                             adc_read_state <= ADC1_READ;
                         elsif ADC2_ACTIVE = '1' and read_active = '1' then
                             adc_read_state <= ADC2_READ;
-                        elsif HVDB_READ_ACTIVE = '1' or read_active = '0' then
+                        elsif HVDB_control_in_s = '1'  then
                             adc_read_state <= HVDB_read;
                         else
                             adc_read_state <= IDLE;
                         end if;
+                        
                     
---                     when START_READ => 
---                     if  HVDB_control_out_s = '0' then    
---                            if MUX_selection < 1 then
---                                if data_ready1 = '1' and readData = '0' and newData = '1'then
---        --                            ADC_data <= adc_out_data;                         
---                                    readData <= '1';
---                                    dataCount <= dataCount + 1;  
---                                    DataTime <= std_logic_vector(TimeCounter); 
---                                    DataType <= "11111000";
---                                    DeviceID <= x"110110";
---                                    TransmitData <= adc_out_data1; 
---                                    ADCselect   <= '0';                       
-                                    
---                                elsif readData = '1' then                          
---                                    readData <= '0';
---                                    adc_read_state <= trasnmit;      
-----                                    startConv<= '0';
-----                                    newData <= '0';                           
---                                    TX_wait_ack  <= '1';
---                                end if;
---                            else 
---                                adc_read_state <= START_READ1;
---                            end if;               
---                        else  
---                              adc_read_state <= START_READ_HVDB;
---                        end if;
-                                              
---                        if command_execute = '1' and command = x"32" then
---                            adc_read_state <= STOP_READ;
---                        end if;
+                     when ADC1_READ =>    
+                        if data_ready1 = '1' and readData = '0' and newData = '1'then                       
+                            readData <= '1';
+                            dataCount <= dataCount + 1;  
+                            DataTime <= std_logic_vector(TimeCounter); 
+                            DataType <= "11111000";
+                            DeviceID <= x"110110";
+                            TransmitData <= adc_out_data1; 
+                            ADCselect   <= '0';                       
+                            
+                        elsif readData = '1' then  
+                            ADC1_ACTIVE <= '0';
+                            ADC2_ACTIVE <= '1';                        
+                            readData <= '0';
+                            adc_read_state <= trasnmit;                                 
+                            TX_wait_ack  <= '1';
+                        end if;        
+                            
+                    when ADC2_READ => 
+                        if data_ready2 = '1' and readData = '0' and newData = '1' then                     
+                            readData <= '1';
+                            dataCount <= dataCount + 1;  
+                            DataTime <= std_logic_vector(TimeCounter); 
+                            DataType <= "11111000";
+                            DeviceID <= x"00000" & LineSelectSignals;
+                            TransmitData <= adc_out_data2;
+                            ADCselect   <= '1';  
 
+                        elsif readData = '1' then                          
+                            readData <= '0';
+                            startConv<= '0';
+                            newData <= '0';                           
+                            TX_wait_ack  <= '1';
+                            adc_read_state <= trasnmit;
+                            
+                            if Mux_selection = "1111" then
+                                Mux_selection <= "0000";
+                                ADC1_ACTIVE <= '0';
+                                ADC2_ACTIVE <= '0';   
+                                HVDB_control_in_s <= '1';
+                            else                      
+                                Mux_selection <= Mux_selection +1;
+                                HVDB_control_in_s <= '0';       
+                            end if;
+                        end if;
+                        
+                     when HVDB_READ =>
+                        if readData = '0' and HVDB_control_out_s = '1' then                        
+                            readData <= '1';
+                            dataCount <= dataCount + 1;  
+                            DataTime <= std_logic_vector(TimeCounter); 
+                            DataType <= "11111000";
+                            DeviceID <= x"313233";
+                            TransmitData <= x"00" & VMON(7 downto 0);  
+                            HVDB_control_in_s <= '0';                                                       
+                        elsif readData = '1'  then                          
+                            readData <= '0';
+                            adc_read_state <= trasnmit;                              
+                            TX_wait_ack  <= '1';
+                            ADC1_ACTIVE <= '1';
+                        end if;
 
                     when trasnmit =>
                         case byteCount is
@@ -625,13 +672,7 @@ begin
                                 byteCount <= "0000";
                                 fifo_data_in_stb_t <= '0';
                                 fifo_data_in_stb_t_ethernet <= '0';
-                                if was_idle ='1' then
-                                    adc_read_state <= IDLE; 
-                                elsif ADCselect = '0' then
-                                    adc_read_state <= START_READ1;
-                                elsif ADCselect = '1' then 
-                                    adc_read_state <= START_READ;
-                                end if;
+                                adc_read_state <= IDLE;
                         end case;
 
                                                 
@@ -646,7 +687,7 @@ begin
                             adc_read_state  <= IDLE;
                 end case;
                 
-                       
+  
 ---------------------------Reading the Command--------------------------------------------------
                 if fifo_empty = '0' and sendLogic = '0' then
                     fifo_data_out_stb <= '1';
@@ -674,11 +715,9 @@ begin
                     -- Fourth byte of HVDB command (third useful byte)
                     elsif HVDB_cmd_on = "11" then
                         command_HVDB(7 downto 0) <= fifo_data_out;   -- store as low byte
-                        HVDB_control_in_s <= '1';                     -- trigger processing
+                        HVDB_control_in_write_s <= '1';              -- trigger processing
                         HVDB_cmd_on <= "00";                           -- reset FSM
                         sendLogic <= sendLogic xor '1';               -- signal complete
-                    
-                
                     else
                         command_execute <= '0';
                         sendLogic <= sendLogic xor '1';
@@ -708,7 +747,7 @@ begin
 
 
      
-  led3_b <= newData;
+  led3_b <= HVDB_control_in_write_s;
   led2_r <= ADCreadActive;
   selectLines <= LineSelectSignals;
   LineSelectSignals <= std_logic_vector(MUX_selection);
