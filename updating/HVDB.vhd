@@ -75,21 +75,44 @@ begin
   reading : process (clk , HVDB_control_in) 
   begin    
   if rising_edge(clk) then 
+    if (HVDB_control_in_write = '0') then
+        HVDB_control_out_write <= '0'; 
+         count <= 0;  
+         Write_MUX_select <= "11";
+         InputState <= '0';
         if HVDB_control_in = '1' and read_count < 24 then
             HVDB_state_data_s <= HVDB_state_data_s(23 downto 1) & VMON ;  
             read_count <= read_count+1;
             Chnl_select <= Read_chnl_in;
             Read_MUX_select <= Read_mux_in;
             HVDB_control_out <= '0';
-         elsif  HVDB_control_in = '1' and read_count = 24 then
+        elsif  HVDB_control_in = '1' and read_count = 24 then
             read_count <= 0;
             HVDB_state_data <= x"11" & HVDB_state_data_s;
             HVDB_control_out <= '1';
          elsif HVDB_control_in = '0' then
             HVDB_control_out <= '0';
             Read_MUX_select <= "11";
-            end if;
-        end if;    
+         end if;
+          
+      elsif count < 5 then 
+         count <= count+1;
+         Write_MUX_select <= SelectMUX_in;
+         Chnl_select <= SelectChannel_in;                                
+      elsif count >= 5 and count < 1000005 then
+         count <= count+1;
+         if command(7 downto 0) = x"74" then 
+             InputState <= not VMON_s; 
+         elsif command(7 downto 0) = x"31" then
+             InputState <= '1';
+         elsif command(7 downto 0) = x"30" then
+             InputState <= '0';
+         end if;
+      elsif count >= 1000005 and count < 1000007 then
+         count <= count+1;    
+         HVDB_control_out_write <= '1';            
+     end if; 
+   end if; 
     end process;
     
 COMMAND_DECODER : process(command)
